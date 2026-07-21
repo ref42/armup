@@ -16,7 +16,8 @@ use crate::tool::ToolKind;
 use crate::types::{ArchiveChecksum, ChecksumAlgorithm, ResolvedTool, ToolVersionOptions};
 
 const ARM_GUIDE_PAGE: &str = "https://learn.arm.com/install-guides/gcc/arm-gnu/";
-const ARM_DOWNLOAD_BASE: &str = "https://developer.arm.com/-/media/Files/downloads/gnu";
+// ponytail: GitLab package discovery returns WAF challenges here; keep scraping Arm's guide for the version.
+const ARM_GITLAB_PACKAGE_BASE: &str = "https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages/generic/gnu-toolchain";
 const LOCAL_PROXY_HOST: &str = "127.0.0.1";
 const LOCAL_PROXY_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 const LOCAL_PROXY_PORTS: &[u16] = &[10808, 10809, 7890, 7891, 8080, 1080];
@@ -465,45 +466,21 @@ async fn resolve_arm_toolchain(client: &Client) -> Result<ResolvedTool> {
 
     let version = extract_arm_version(&page)
         .context("could not find the latest Arm GNU toolchain version on the Arm install guide")?;
-    let asset_name = format!("arm-gnu-toolchain-{version}-mingw-w64-x86_64-arm-none-eabi.zip");
-    let download_url = format!("{ARM_DOWNLOAD_BASE}/{version}/binrel/{asset_name}");
-    let checksum = resolve_arm_sha256_checksum(client, &download_url)
-        .await
-        .with_context(|| format!("failed to resolve Arm checksum for {asset_name}"))?;
 
-    Ok(ResolvedTool {
+    Ok(arm_toolchain_package(version))
+}
+
+fn arm_toolchain_package(version: String) -> ResolvedTool {
+    let asset_name = format!("arm-gnu-toolchain-{version}-mingw-w64-x86_64-arm-none-eabi.zip");
+    let download_url = format!("{ARM_GITLAB_PACKAGE_BASE}/{version}/{asset_name}");
+
+    ResolvedTool {
         kind: ToolKind::ArmNoneEabiGcc,
         version,
         asset_name,
         download_url,
-        checksum: Some(checksum),
-    })
-}
-
-async fn resolve_arm_sha256_checksum(
-    client: &Client,
-    download_url: &str,
-) -> Result<ArchiveChecksum> {
-    let checksum_url = format!("{download_url}.sha256asc");
-    let body = client
-        .get(&checksum_url)
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .with_context(|| format!("failed to download {checksum_url}"))?
-        .error_for_status()
-        .with_context(|| format!("Arm checksum URL returned an error for {checksum_url}"))?
-        .text()
-        .await
-        .with_context(|| format!("failed to read {checksum_url}"))?;
-
-    let value = extract_sha256_hex(&body)
-        .with_context(|| format!("could not find a SHA-256 digest in {checksum_url}"))?;
-
-    Ok(ArchiveChecksum {
-        algorithm: ChecksumAlgorithm::Sha256,
-        value,
-    })
+        checksum: None,
+    }
 }
 
 fn parse_github_digest(raw: Option<&str>) -> Option<ArchiveChecksum> {
@@ -522,17 +499,11 @@ fn parse_github_digest(raw: Option<&str>) -> Option<ArchiveChecksum> {
     }
 }
 
-fn extract_sha256_hex(text: &str) -> Option<String> {
-    text.split(|ch: char| !ch.is_ascii_hexdigit())
-        .find(|part| part.len() == 64)
-        .map(|part| part.to_ascii_lowercase())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_github_release_tag, extract_sha256_hex, fallback_github_asset_name,
-        parse_github_digest,
+        ARM_GITLAB_PACKAGE_BASE, arm_toolchain_package, extract_arm_version,
+        extract_github_release_tag, fallback_github_asset_name, parse_github_digest,
     };
     use crate::tool::ToolKind;
     use crate::types::ChecksumAlgorithm;
@@ -556,32 +527,6 @@ mod tests {
         assert!(parse_github_digest(Some("sha512:abc")).is_none());
         assert!(parse_github_digest(Some("sha256:not-hex")).is_none());
         assert!(parse_github_digest(None).is_none());
-    }
-
-    #[test]
-    fn extract_sha256_hex_reads_plain_checksum_files() {
-        let checksum = extract_sha256_hex(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  archive.zip",
-        )
-        .unwrap();
-
-        assert_eq!(
-            checksum,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
-    }
-
-    #[test]
-    fn extract_sha256_hex_reads_signed_checksum_files() {
-        let checksum = extract_sha256_hex(
-            "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nSHA256(archive.zip)= BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n-----BEGIN PGP SIGNATURE-----",
-        )
-        .unwrap();
-
-        assert_eq!(
-            checksum,
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        );
     }
 
     #[test]
@@ -617,6 +562,32 @@ mod tests {
             fallback_github_asset_name(ToolKind::XpackOpenocd, "0.12.0-7").unwrap(),
             "xpack-openocd-0.12.0-7-win32-x64.zip"
         );
+    }
+
+    #[test]
+    fn arm_toolchain_package_uses_gitlab_package_url() {
+        let tool = arm_toolchain_package("15.3.rel1".to_string());
+
+        assert_eq!(tool.kind, ToolKind::ArmNoneEabiGcc);
+        assert_eq!(tool.version, "15.3.rel1");
+        assert_eq!(
+            tool.asset_name,
+            "arm-gnu-toolchain-15.3.rel1-mingw-w64-x86_64-arm-none-eabi.zip"
+        );
+        assert_eq!(
+            tool.download_url,
+            format!("{ARM_GITLAB_PACKAGE_BASE}/15.3.rel1/{}", tool.asset_name)
+        );
+        assert!(tool.checksum.is_none());
+    }
+
+    #[test]
+    fn extract_arm_version_reads_toolchain_archive_name() {
+        let page = r#"
+            <a href="/gnu/15.3.rel1/binrel/arm-gnu-toolchain-15.3.rel1-mingw-w64-x86_64-arm-none-eabi.zip">
+        "#;
+
+        assert_eq!(extract_arm_version(page).unwrap(), "15.3.rel1");
     }
 }
 
