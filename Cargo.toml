@@ -1,6 +1,6 @@
 [package]
 name = "armup"
-version = "0.1.5"
+version = "1.0.0"
 edition = "2024"
 description = "Install embedded Cortex-M tools on Windows"
 license = "MIT"
