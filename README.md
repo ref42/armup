@@ -4,6 +4,12 @@
 It downloads and installs the supported tools into one root directory, then can
 add them to the current user's `Path`.
 
+Install `armup` itself from PowerShell:
+
+```powershell
+irm https://github.com/ref42/armup/releases/latest/download/install.ps1 | iex
+```
+
 It installs:
 
 - `arm-none-eabi-gcc`

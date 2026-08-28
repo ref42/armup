@@ -30,6 +30,11 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Validate PowerShell installer
+        shell: pwsh
+        run: |
+          [ScriptBlock]::Create((Get-Content install.ps1 -Raw)) | Out-Null
+
       - name: Package
         shell: pwsh
         run: |
@@ -38,17 +43,23 @@ jobs:
             $version = "manual-${{ github.run_number }}"
           }
           $archive = "armup-$version-x86_64-pc-windows-msvc.zip"
+          $stableArchive = "armup.zip"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\armup.exe dist\armup.exe
           Compress-Archive -Path dist\armup.exe -DestinationPath $archive -Force
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archive" | Out-File -Encoding ascii "$archive.sha256"
+          Copy-Item $archive $stableArchive -Force
+          "$hash  $stableArchive" | Out-File -Encoding ascii "$stableArchive.sha256"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: armup-windows
           path: |
+            install.ps1
+            armup.zip
+            armup.zip.sha256
             armup-*-x86_64-pc-windows-msvc.zip
             armup-*-x86_64-pc-windows-msvc.zip.sha256
 
@@ -57,6 +68,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            install.ps1
+            armup.zip
+            armup.zip.sha256
             armup-*-x86_64-pc-windows-msvc.zip
             armup-*-x86_64-pc-windows-msvc.zip.sha256
           generate_release_notes: true
