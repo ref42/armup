@@ -1,1 +1,1 @@
-flags = ["-Z, threads=20, embeddata=no"]
+flags = ["-Z, embeddata=no"]
