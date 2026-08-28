@@ -6,7 +6,7 @@ add them to the current user's `Path`.
 
 It installs:
 
-- Arm GNU Toolchain (`arm-none-eabi-gcc`)
+- `arm-none-eabi-gcc`
 - `clangd`
 - `cmake`
 - `ninja`
