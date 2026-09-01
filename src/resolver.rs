@@ -5,7 +5,6 @@ use reqwest::header::{
 };
 use reqwest::{Client, Proxy};
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::env;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -15,8 +14,7 @@ use tokio::task::JoinSet;
 use crate::tool::ToolKind;
 use crate::types::{ArchiveChecksum, ChecksumAlgorithm, ResolvedTool, ToolVersionOptions};
 
-const ARM_GUIDE_PAGE: &str = "https://learn.arm.com/install-guides/gcc/arm-gnu/";
-// ponytail: GitLab package discovery returns WAF challenges here; keep scraping Arm's guide for the version.
+const ARM_PACKAGE_API: &str = "https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages?package_type=generic&package_name=gnu-toolchain&per_page=100&order_by=created_at&sort=desc";
 const ARM_GITLAB_PACKAGE_BASE: &str = "https://gitlab.arm.com/api/v4/projects/tooling%2Fgnu-toolchains-for-arm/packages/generic/gnu-toolchain";
 const LOCAL_PROXY_HOST: &str = "127.0.0.1";
 const LOCAL_PROXY_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -42,6 +40,11 @@ struct GitHubAsset {
     name: String,
     browser_download_url: String,
     digest: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArmPackage {
+    version: String,
 }
 
 pub fn build_client() -> Result<Client> {
@@ -452,20 +455,20 @@ async fn resolve_github_release_options(
 }
 
 async fn resolve_arm_toolchain(client: &Client) -> Result<ResolvedTool> {
-    let page = client
-        .get(ARM_GUIDE_PAGE)
+    let packages = client
+        .get(ARM_PACKAGE_API)
         .timeout(Duration::from_secs(30))
         .send()
         .await
-        .context("failed to query the Arm GNU toolchain install guide")?
+        .context("failed to query Arm GNU toolchain packages")?
         .error_for_status()
-        .context("Arm GNU toolchain install guide returned an error")?
-        .text()
+        .context("Arm GNU toolchain package API returned an error")?
+        .json::<Vec<ArmPackage>>()
         .await
-        .context("failed to read the Arm GNU toolchain install guide")?;
+        .context("failed to parse Arm GNU toolchain package metadata")?;
 
-    let version = extract_arm_version(&page)
-        .context("could not find the latest Arm GNU toolchain version on the Arm install guide")?;
+    let version = latest_arm_version(packages.into_iter().map(|package| package.version))
+        .context("could not find a stable Arm GNU toolchain release")?;
 
     Ok(arm_toolchain_package(version))
 }
@@ -499,46 +502,18 @@ fn parse_github_digest(raw: Option<&str>) -> Option<ArchiveChecksum> {
     }
 }
 
-fn extract_arm_version(page: &str) -> Option<String> {
-    let prefix = "arm-gnu-toolchain-";
-    let mut offset = 0;
-    let mut seen = HashSet::new();
-
-    while let Some(found) = page[offset..].find(prefix) {
-        let start = offset + found + prefix.len();
-        let remainder = &page[start..];
-        let Some(end) = remainder.find('-') else {
-            offset = start;
-            continue;
-        };
-        let candidate = &remainder[..end];
-        offset = start;
-
-        if candidate.contains('<') || candidate.contains('>') {
-            continue;
-        }
-        if candidate.len() > 24 || candidate.is_empty() {
-            continue;
-        }
-        let candidate = candidate.to_ascii_lowercase();
-        if !candidate
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
-        {
-            continue;
-        }
-        if !looks_like_arm_version(&candidate) {
-            continue;
-        }
-        if seen.insert(candidate.clone()) {
-            return Some(candidate);
-        }
-    }
-
-    None
+fn latest_arm_version<I>(versions: I) -> Option<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    versions
+        .into_iter()
+        .filter(|version| looks_like_arm_version(version))
+        .max_by(|left, right| compare_arm_versions(left, right))
 }
 
 fn looks_like_arm_version(candidate: &str) -> bool {
+    let candidate = candidate.to_ascii_lowercase();
     let Some((base, rel)) = candidate.split_once(".rel") else {
         return false;
     };
@@ -555,6 +530,21 @@ fn looks_like_arm_version(candidate: &str) -> bool {
             .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
 }
 
+fn compare_arm_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    arm_version_key(left).cmp(&arm_version_key(right))
+}
+
+fn arm_version_key(version: &str) -> (Vec<u64>, u64) {
+    let normalized = version.to_ascii_lowercase();
+    let (base, release) = normalized.split_once(".rel").unwrap_or((&normalized, "0"));
+    let base_numbers = base
+        .split('.')
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect();
+    let release_number = release.parse::<u64>().unwrap_or(0);
+    (base_numbers, release_number)
+}
+
 fn normalize_version(tag: &str) -> String {
     tag.trim_start_matches(['v', 'V']).to_string()
 }
@@ -562,8 +552,8 @@ fn normalize_version(tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ARM_GITLAB_PACKAGE_BASE, arm_toolchain_package, extract_arm_version,
-        extract_github_release_tag, fallback_github_asset_name, parse_github_digest,
+        ARM_GITLAB_PACKAGE_BASE, arm_toolchain_package, extract_github_release_tag,
+        fallback_github_asset_name, latest_arm_version, parse_github_digest,
     };
     use crate::tool::ToolKind;
     use crate::types::ChecksumAlgorithm;
@@ -642,11 +632,14 @@ mod tests {
     }
 
     #[test]
-    fn extract_arm_version_reads_toolchain_archive_name() {
-        let page = r#"
-            <a href="/gnu/15.3.rel1/binrel/arm-gnu-toolchain-15.3.rel1-mingw-w64-x86_64-arm-none-eabi.zip">
-        "#;
+    fn latest_arm_version_ignores_old_and_non_release_packages() {
+        let versions = vec![
+            "15.2.rel1".to_string(),
+            "15.3.rel1".to_string(),
+            "12.2.mpacbti-bet1".to_string(),
+            "14.3.rel1".to_string(),
+        ];
 
-        assert_eq!(extract_arm_version(page).unwrap(), "15.3.rel1");
+        assert_eq!(latest_arm_version(versions).as_deref(), Some("15.3.rel1"));
     }
 }
