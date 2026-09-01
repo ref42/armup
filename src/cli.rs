@@ -355,7 +355,7 @@ pub(crate) fn parse_root_path(raw: &str) -> std::result::Result<PathBuf, String>
 
     #[cfg(windows)]
     {
-        return normalize_windows_root_text(trimmed).map(PathBuf::from);
+        normalize_windows_root_text(trimmed).map(PathBuf::from)
     }
 
     #[cfg(not(windows))]

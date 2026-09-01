@@ -234,10 +234,10 @@ fn version_numbers(version: &str) -> Vec<u64> {
             current.clear();
         }
     }
-    if !current.is_empty() {
-        if let Ok(number) = current.parse() {
-            numbers.push(number);
-        }
+    if !current.is_empty()
+        && let Ok(number) = current.parse()
+    {
+        numbers.push(number);
     }
     numbers
 }

@@ -183,6 +183,17 @@ fn managed_root_keys(path: &Path) -> Vec<String> {
     keys
 }
 
+fn normalize_path_key(path: &Path) -> String {
+    normalize_string_key(&path.to_string_lossy())
+}
+
+fn normalize_string_key(value: &str) -> String {
+    value
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{merge_user_path, path_is_under_managed_root};
@@ -225,15 +236,4 @@ mod tests {
 
         assert_eq!(merged, r"C:\Windows;D:\Embedded_Toolchain\ninja\1.13.2");
     }
-}
-
-fn normalize_path_key(path: &Path) -> String {
-    normalize_string_key(&path.to_string_lossy())
-}
-
-fn normalize_string_key(value: &str) -> String {
-    value
-        .replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_ascii_lowercase()
 }

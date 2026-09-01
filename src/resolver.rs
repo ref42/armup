@@ -499,6 +499,66 @@ fn parse_github_digest(raw: Option<&str>) -> Option<ArchiveChecksum> {
     }
 }
 
+fn extract_arm_version(page: &str) -> Option<String> {
+    let prefix = "arm-gnu-toolchain-";
+    let mut offset = 0;
+    let mut seen = HashSet::new();
+
+    while let Some(found) = page[offset..].find(prefix) {
+        let start = offset + found + prefix.len();
+        let remainder = &page[start..];
+        let Some(end) = remainder.find('-') else {
+            offset = start;
+            continue;
+        };
+        let candidate = &remainder[..end];
+        offset = start;
+
+        if candidate.contains('<') || candidate.contains('>') {
+            continue;
+        }
+        if candidate.len() > 24 || candidate.is_empty() {
+            continue;
+        }
+        let candidate = candidate.to_ascii_lowercase();
+        if !candidate
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
+        {
+            continue;
+        }
+        if !looks_like_arm_version(&candidate) {
+            continue;
+        }
+        if seen.insert(candidate.clone()) {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn looks_like_arm_version(candidate: &str) -> bool {
+    let Some((base, rel)) = candidate.split_once(".rel") else {
+        return false;
+    };
+    if base.is_empty() || rel.is_empty() {
+        return false;
+    }
+    if !rel.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    let segments: Vec<&str> = base.split('.').collect();
+    segments.len() >= 2
+        && segments
+            .iter()
+            .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn normalize_version(tag: &str) -> String {
+    tag.trim_start_matches(['v', 'V']).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -589,64 +649,4 @@ mod tests {
 
         assert_eq!(extract_arm_version(page).unwrap(), "15.3.rel1");
     }
-}
-
-fn extract_arm_version(page: &str) -> Option<String> {
-    let prefix = "arm-gnu-toolchain-";
-    let mut offset = 0;
-    let mut seen = HashSet::new();
-
-    while let Some(found) = page[offset..].find(prefix) {
-        let start = offset + found + prefix.len();
-        let remainder = &page[start..];
-        let Some(end) = remainder.find('-') else {
-            offset = start;
-            continue;
-        };
-        let candidate = &remainder[..end];
-        offset = start;
-
-        if candidate.contains('<') || candidate.contains('>') {
-            continue;
-        }
-        if candidate.len() > 24 || candidate.is_empty() {
-            continue;
-        }
-        let candidate = candidate.to_ascii_lowercase();
-        if !candidate
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
-        {
-            continue;
-        }
-        if !looks_like_arm_version(&candidate) {
-            continue;
-        }
-        if seen.insert(candidate.clone()) {
-            return Some(candidate);
-        }
-    }
-
-    None
-}
-
-fn looks_like_arm_version(candidate: &str) -> bool {
-    let Some((base, rel)) = candidate.split_once(".rel") else {
-        return false;
-    };
-    if base.is_empty() || rel.is_empty() {
-        return false;
-    }
-    if !rel.chars().all(|ch| ch.is_ascii_digit()) {
-        return false;
-    }
-    let segments: Vec<&str> = base.split('.').collect();
-    segments.len() >= 2
-        && segments
-            .iter()
-            .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
-}
-
-fn normalize_version(tag: &str) -> String {
-    tag.trim_start_matches(['v', 'V']).to_string()
 }

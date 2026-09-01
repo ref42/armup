@@ -470,12 +470,11 @@ async fn probe_multipart_download(
             .and_then(|value| value.to_str().ok())
             .map(|value| value.eq_ignore_ascii_case("bytes"))
             .unwrap_or(false);
-        if supports_ranges {
-            if let Some(content_length) = response.content_length() {
-                if let Some(result) = multipart_plan_for_length(content_length, download_config) {
-                    return Ok(Some(result));
-                }
-            }
+        if supports_ranges
+            && let Some(content_length) = response.content_length()
+            && let Some(result) = multipart_plan_for_length(content_length, download_config)
+        {
+            return Ok(Some(result));
         }
     }
 
@@ -1226,43 +1225,6 @@ fn extract_zip_archive(archive_path: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{DEFAULT_MULTIPART_THRESHOLD_BYTES, DownloadConfig, multipart_plan_for_length};
-
-    #[test]
-    fn multipart_planner_uses_medium_archives() {
-        let config = DownloadConfig::default();
-        let (_, parts) =
-            multipart_plan_for_length(DEFAULT_MULTIPART_THRESHOLD_BYTES, config).unwrap();
-
-        assert_eq!(parts, 2);
-    }
-
-    #[test]
-    fn multipart_planner_obeys_connection_limit() {
-        let config = DownloadConfig::from_connections(4);
-        let (_, parts) = multipart_plan_for_length(512 * 1024 * 1024, config).unwrap();
-
-        assert_eq!(parts, 4);
-    }
-
-    #[test]
-    fn multipart_planner_caps_each_archive_below_global_default() {
-        let config = DownloadConfig::from_connections(16);
-        let (_, parts) = multipart_plan_for_length(512 * 1024 * 1024, config).unwrap();
-
-        assert_eq!(parts, 8);
-    }
-
-    #[test]
-    fn multipart_planner_can_be_disabled_with_one_connection() {
-        let config = DownloadConfig::from_connections(1);
-
-        assert!(multipart_plan_for_length(512 * 1024 * 1024, config).is_none());
-    }
-}
-
 fn archive_common_prefix<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Option<String>> {
     let mut prefix: Option<String> = None;
 
@@ -1311,4 +1273,41 @@ fn sanitize_archive_path(path: &str) -> Result<PathBuf> {
         }
     }
     Ok(sanitized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_MULTIPART_THRESHOLD_BYTES, DownloadConfig, multipart_plan_for_length};
+
+    #[test]
+    fn multipart_planner_uses_medium_archives() {
+        let config = DownloadConfig::default();
+        let (_, parts) =
+            multipart_plan_for_length(DEFAULT_MULTIPART_THRESHOLD_BYTES, config).unwrap();
+
+        assert_eq!(parts, 2);
+    }
+
+    #[test]
+    fn multipart_planner_obeys_connection_limit() {
+        let config = DownloadConfig::from_connections(4);
+        let (_, parts) = multipart_plan_for_length(512 * 1024 * 1024, config).unwrap();
+
+        assert_eq!(parts, 4);
+    }
+
+    #[test]
+    fn multipart_planner_caps_each_archive_below_global_default() {
+        let config = DownloadConfig::from_connections(16);
+        let (_, parts) = multipart_plan_for_length(512 * 1024 * 1024, config).unwrap();
+
+        assert_eq!(parts, 8);
+    }
+
+    #[test]
+    fn multipart_planner_can_be_disabled_with_one_connection() {
+        let config = DownloadConfig::from_connections(1);
+
+        assert!(multipart_plan_for_length(512 * 1024 * 1024, config).is_none());
+    }
 }
